@@ -434,7 +434,7 @@ export function getTypeOfBinaryOperation(
     // because the literal values may change each time. We also don't want to
     // apply literal math within the body of a lambda because they are often
     // used as callbacks where the value changes each time they are called.
-    const isLiteralMathAllowed = !isWithinLoop(node) && !getEnclosingLambda(node);
+    const isLiteralMathAllowed = !getEnclosingLambda(node);
 
     // Don't special-case tuple __add__ if the left type is a union. This
     // can result in an infinite loop if we keep creating new tuple types

@@ -20210,17 +20210,97 @@ export function createTypeEvaluator(
             return;
         }
 
-        const iteratorTypeResult = getTypeOfExpression(node.d.iterableExpr);
+        const iterableExpr = node.d.iterableExpr;
+        const iteratorTypeResult = getTypeOfExpression(iterableExpr);
         const iteratedType =
-            getTypeOfIterator(iteratorTypeResult, !!node.d.isAsync, node.d.iterableExpr)?.type ?? UnknownType.create();
+            getTypeOfIterator(iteratorTypeResult, !!node.d.isAsync, iterableExpr)?.type ?? UnknownType.create();
+        let valueType = iteratedType;
+
+        // Special case for range with literal arguments
+        const literalHandling = () => {
+            if (
+                !isClass(iteratorTypeResult.type) ||
+                !isClass(iteratedType) ||
+                iteratorTypeResult.type.shared.fullName !== 'builtins.range' ||
+                iteratedType.shared.fullName !== 'builtins.int' ||
+                iterableExpr.nodeType !== ParseNodeType.Call
+            ) {
+                return;
+            }
+
+            const argTypes = iterableExpr.d.args.map((n) => getTypeOfExpression(n.d.valueExpr).type);
+            if (!argTypes.every((t) => isClass(t))) {
+                return;
+            }
+
+            const argValues = argTypes.map((t) => t.priv.literalValue);
+            if (!argValues.every((v) => typeof v === 'number' || typeof v === 'bigint')) {
+                return;
+            }
+            if (!argValues.every((v) => typeof v !== 'number' || Number.isInteger(v))) {
+                return;
+            }
+
+            const rangeLen = (start: bigint, stop: bigint, step: bigint) => {
+                if (step === 0n) return;
+
+                if (step > 0n) {
+                    if (start >= stop) return 0n;
+                    const diff = stop - start;
+                    return (diff + step - 1n) / step;
+                } else {
+                    if (start <= stop) return 0n;
+                    const diff = start - stop;
+                    return (diff - step - 1n) / -step;
+                }
+            };
+            const rangeValues = (start: bigint, stop: bigint, step: bigint = 1n) => {
+                if (step === 0n) return;
+
+                const out: bigint[] = [];
+                if (step > 0n) {
+                    for (let x = start; x < stop; x += step) out.push(x);
+                } else {
+                    for (let x = start; x > stop; x += step) out.push(x);
+                }
+                return out;
+            };
+            const rangeOp = (start: bigint, stop: bigint, step: bigint = 1n) => {
+                const len = rangeLen(start, stop, step);
+                if (len === undefined || len > 32) return;
+                const values = rangeValues(start, stop, step);
+                if (values === undefined) return;
+                const types = values.map((v) =>
+                    TypeBase.cloneTypeAsInstance(
+                        cloneBuiltinClassWithLiteral(node.d.targetExpr, iteratedType, 'int', v),
+                        true
+                    )
+                );
+                valueType = combineTypes(types);
+                valueType;
+            };
+
+            switch (argValues.length) {
+                case 1:
+                    rangeOp(0n, BigInt(argValues[0]), 1n);
+                    break;
+                case 2:
+                    rangeOp(BigInt(argValues[0]), BigInt(argValues[1]), 1n);
+                    break;
+                case 3:
+                    rangeOp(BigInt(argValues[0]), BigInt(argValues[1]), BigInt(argValues[2]));
+                    break;
+            }
+        };
+        literalHandling();
 
         assignTypeToExpression(
             node.d.targetExpr,
-            { type: iteratedType, isIncomplete: iteratorTypeResult.isIncomplete },
+            { type: valueType, isIncomplete: iteratorTypeResult.isIncomplete },
             node.d.targetExpr
         );
 
-        writeTypeCache(node, { type: iteratedType, isIncomplete: !!iteratorTypeResult.isIncomplete }, EvalFlags.None);
+        writeTypeCache(node, { type: valueType, isIncomplete: !!iteratorTypeResult.isIncomplete }, EvalFlags.None);
     }
 
     function evaluateTypesForExceptStatement(node: ExceptNode): void {
